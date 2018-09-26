@@ -1,0 +1,88 @@
+steps:
+  # devopsリポジトリ利用のためsshキーを復号
+  - id: Decrypt ssh key
+    name: 'gcr.io/cloud-builders/gcloud'
+    args:
+    - kms
+    - decrypt
+    - --ciphertext-file=cb-sample-server-devops-github-rsa.enc
+    - --plaintext-file=/root/.ssh/cb-sample-server-devops-github-rsa
+    - --location=global
+    - --keyring=cb-sample-server-devops-keyring
+    - --key=cb-sample-server-devops-github-key
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # devopsリポジトリ利用のためrsaキーを設定
+  - id: Set rsa file
+    name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      chmod 600 cb-sample-server-devops-github-rsa
+      mv cb-sample-server-devops-github-rsa /root/.ssh/cb-sample-server-devops-github-rsa
+      cat <<EOF >/root/.ssh/config
+      Hostname github.com
+      IdentityFile /root/.ssh/cb-sample-server-devops-github-rsa
+      EOF
+      mv known_hosts /root/.ssh/known_hosts
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # devops リポジトリをcloneする
+  - id: Clone devops from github
+    name: 'gcr.io/cloud-builders/git'
+    args: ['clone', 'git@github.com:sanleon/cb-sample-server-devops.git']
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # 既存のrelease tagイメージを取得します。
+  - id: Pull Docker Image
+    name: 'gcr.io/cloud-builders/docker'
+    args: ['pull', 'asia.gcr.io/$PROJECT_ID/cb-sample-server:$_RELEASE_TAG']
+  # 既存のrelease tagイメージを利用して新しいDockerイメージを作成します。
+  - id: Build Docker Image
+    name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '--cache-from=asia.gcr.io/$PROJECT_ID/cb-sample-server:$_RELEASE_TAG','--tag=asia.gcr.io/$PROJECT_ID/cb-sample-server:$_ENV-$SHORT_SHA', '.']
+  # BuildしたイメージをPush
+  - id: Push Docker Image
+    name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'asia.gcr.io/$PROJECT_ID/cb-sample-server:$_ENV-$SHORT_SHA']
+  # devopsリポジトリに登録するTagを作成する
+  - id: Create Tag
+    name: 'gcr.io/cloud-builders/git'
+    dir: cb-sample-server-devops
+    args: ['tag', '--force', '$_ENV-$SHORT_SHA']
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # dev-commitID tagを作成します。これでDeployが実行されます。
+  - id: Push Tag to devops repository
+    name: 'gcr.io/cloud-builders/git'
+    dir: cb-sample-server-devops
+    args: ['push', 'origin', '$_ENV-$SHORT_SHA']
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # 削除まで5秒ぐらい待ちます
+  - id: Sleep 5 seconds
+    name: 'ubuntu'
+    args: ['sleep', '5']
+    timeout: 6s
+  # 作成したtagを削除します。（tagが増えること防止するためです。）
+  - id: Delete git tag
+    dir: cb-sample-server-devops
+    name: 'gcr.io/cloud-builders/git'
+    args: ['tag', '-d', '$_ENV-$SHORT_SHA']
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
+  # 削除tagをdevopsリポジトリにpushする
+  - id: Delete git tag push
+    dir: cb-sample-server-devops
+    name: 'gcr.io/cloud-builders/git'
+    args: ['push', 'origin', ':refs/tags/$_ENV-$SHORT_SHA']
+    volumes:
+    - name: 'ssh'
+      path: /root/.ssh
